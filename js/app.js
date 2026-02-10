@@ -63,6 +63,9 @@ function initRoomSelect() {
 
 /** 选房间后，在日历上方显示该房间的设备列表 */
 function updateRoomDevices() {
+  awaitingTimeForSwitch = false;
+  const hintEl = document.getElementById('calendarHint');
+  if (hintEl) hintEl.innerHTML = CALENDAR_HINT_DEFAULT;
   const room = document.getElementById('room').value;
   const wrap = document.getElementById('roomDevicesWrap');
   const container = document.getElementById('roomDevices');
@@ -94,11 +97,14 @@ function formatDateDisplay(d) {
   return `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日 周${week}`;
 }
 
+const STORAGE_KEY_USER = 'labReservationUser';
+
 function login() {
   const user = document.getElementById('username').value.trim();
   const pass = document.getElementById('password').value;
   if (user === 'admin' && pass === 'lab123') {
     currentUser = 'admin';
+    localStorage.setItem(STORAGE_KEY_USER, currentUser);
     document.getElementById('login').classList.add('hidden');
     document.getElementById('app').classList.remove('hidden');
     document.getElementById('userLabel').textContent = user;
@@ -113,23 +119,48 @@ function login() {
 
 function logout() {
   currentUser = null;
+  localStorage.removeItem(STORAGE_KEY_USER);
   document.getElementById('app').classList.add('hidden');
   document.getElementById('login').classList.remove('hidden');
 }
 
+/** 页面加载时恢复登录状态，避免刷新后重新登录 */
+function restoreLoginIfSaved() {
+  const saved = localStorage.getItem(STORAGE_KEY_USER);
+  if (saved) {
+    currentUser = saved;
+    document.getElementById('login').classList.add('hidden');
+    document.getElementById('app').classList.remove('hidden');
+    document.getElementById('userLabel').textContent = saved;
+    currentDate = new Date();
+    initRoomSelect();
+    renderDateNav();
+    renderDayCalendar();
+  }
+}
+
 function prevDay() {
+  awaitingTimeForSwitch = false;
+  const hintEl = document.getElementById('calendarHint');
+  if (hintEl) hintEl.innerHTML = CALENDAR_HINT_DEFAULT;
   currentDate.setDate(currentDate.getDate() - 1);
   renderDateNav();
   renderDayCalendar();
 }
 
 function nextDay() {
+  awaitingTimeForSwitch = false;
+  const hintEl = document.getElementById('calendarHint');
+  if (hintEl) hintEl.innerHTML = CALENDAR_HINT_DEFAULT;
   currentDate.setDate(currentDate.getDate() + 1);
   renderDateNav();
   renderDayCalendar();
 }
 
 function goToToday() {
+  awaitingTimeForSwitch = false;
+  const hintEl = document.getElementById('calendarHint');
+  if (hintEl) hintEl.innerHTML = CALENDAR_HINT_DEFAULT;
   const today = new Date();
   today.setHours(0, 0, 0, 0);
   currentDate.setTime(today.getTime());
@@ -167,37 +198,98 @@ function getSlotRange(slotA, slotB) {
   return TIME_SLOTS.slice(lo, hi + 1);
 }
 
-/** 按房间聚合：将时段按「可预约/已满/我的预约」合并成连续块。同一房间同一时段只允许一台设备被预约。 */
+/** 按房间聚合：空档合并为 empty run；每台设备的预约按（设备、用户、连续时段）拆成 run，同一时段多设备可并排展示。 */
 function getRunsByRoom(room, dayBookings) {
   const devices = getEquipmentByRoom(room).map(e => e.name);
   const runs = [];
+
+  // 1) 空档：至少有一台设备空闲的连续时段合并为一个 empty run
   for (let i = 0; i < TIME_SLOTS.length; i++) {
     const slot = TIME_SLOTS[i];
-    const myEquip = [];
-    let anyBooked = false;
-    devices.forEach(name => {
-      const user = dayBookings[name] && dayBookings[name][slot];
-      if (user) {
-        anyBooked = true;
-        if (user === currentUser) myEquip.push(name);
-      }
-    });
-    // 该时段该房间只要有一台被预约则视为已占满，不能再预约其他设备
-    const hasFree = !anyBooked;
-    const status = myEquip.length > 0 ? 'mine' : (hasFree ? 'empty' : 'full');
-    const equipmentNames = myEquip.length > 0 ? myEquip : null;
-    if (runs.length > 0 && runs[runs.length - 1].status === status) {
+    const hasFree = devices.some(name => !(dayBookings[name] && dayBookings[name][slot]));
+    if (!hasFree) continue;
+    if (runs.length > 0 && runs[runs.length - 1].status === 'empty') {
       runs[runs.length - 1].endIdx = i;
-      if (status === 'mine') {
-        equipmentNames.forEach(n => {
-          if (!runs[runs.length - 1].equipmentNames.includes(n)) runs[runs.length - 1].equipmentNames.push(n);
-        });
-      }
     } else {
-      runs.push({ startIdx: i, endIdx: i, status, equipmentNames: status === 'mine' ? equipmentNames.slice() : null });
+      runs.push({ startIdx: i, endIdx: i, status: 'empty', equipmentNames: null, user: null });
     }
   }
+
+  // 2) 每台设备：按「同一用户连续时段」拆成 run（mine / full），可重叠
+  devices.forEach(equipName => {
+    const slotToUser = dayBookings[equipName] || {};
+    let j = 0;
+    while (j < TIME_SLOTS.length) {
+      const user = slotToUser[TIME_SLOTS[j]];
+      if (!user) {
+        j++;
+        continue;
+      }
+      const startIdx = j;
+      while (j < TIME_SLOTS.length && slotToUser[TIME_SLOTS[j]] === user) j++;
+      const endIdx = j - 1;
+      const status = user === currentUser ? 'mine' : 'full';
+      runs.push({
+        startIdx,
+        endIdx,
+        status,
+        equipmentNames: [equipName],
+        user
+      });
+    }
+  });
+
   return runs;
+}
+
+/** 两 run 时间重叠：共享至少一个时间格 */
+function runsOverlap(a, b) {
+  return a.startIdx <= b.endIdx && b.startIdx <= a.endIdx;
+}
+
+/** 为有重叠的 run 分配列号，使重叠的预约左右分栏显示 */
+function assignOverlapColumns(runs) {
+  const n = runs.length;
+  if (n === 0) return;
+  // 建图：重叠则连边
+  const overlap = (i, j) => runsOverlap(runs[i], runs[j]);
+  // 找连通分量（并查集）
+  const parent = Array.from({ length: n }, (_, i) => i);
+  function find(i) {
+    if (parent[i] !== i) parent[i] = find(parent[i]);
+    return parent[i];
+  }
+  function unite(i, j) {
+    parent[find(i)] = find(j);
+  }
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 1; j < n; j++) {
+      if (overlap(i, j)) unite(i, j);
+    }
+  }
+  const compId = runs.map((_, i) => find(i));
+  const compRuns = {};
+  runs.forEach((run, i) => {
+    const c = compId[i];
+    if (!compRuns[c]) compRuns[c] = [];
+    compRuns[c].push({ run, idx: i });
+  });
+  // 每个分量内按 startIdx 排序，依次分配列 0,1,2,...
+  Object.values(compRuns).forEach(arr => {
+    arr.sort((a, b) => a.run.startIdx - b.run.startIdx);
+    const totalColumns = arr.length;
+    arr.forEach(({ run, idx }, col) => {
+      run.column = col;
+      run.totalColumns = totalColumns;
+    });
+  });
+  // 无重叠的 run（单独成组）设为 1 列
+  runs.forEach(run => {
+    if (run.column == null) {
+      run.column = 0;
+      run.totalColumns = 1;
+    }
+  });
 }
 
 let dragStartSlot = null;
@@ -206,14 +298,20 @@ let isDragging = false;
 let mouseDownOnMineRun = null;
 let pendingBookingSlots = null;
 let pendingCancelRun = null;
+/** 从「我的预约」选择「改约其他设备」时，确认新预约前需先取消的旧设备 */
+let pendingSwitchFromEquipment = null;
+/** 改约时需取消的旧时段（选完新时间后确认时用） */
+let pendingSwitchFromSlots = null;
+/** 为 true 时，下一次在日历上选时间会打开预约弹窗（改约其他设备流程） */
+let awaitingTimeForSwitch = false;
 
 function onSlotPointerDown(e, slot) {
   const room = document.getElementById('room').value;
   if (!room) return;
   const dayBookings = getBookingsForDay(formatDate(currentDate));
   const devices = getEquipmentByRoom(room).map(e => e.name);
-  // 同一房间同一时段只允许一台设备：该时段只要有一台被预约则不可再选
-  const hasFree = !devices.some(name => dayBookings[name] && dayBookings[name][slot]);
+  // 该时段至少有一台设备空闲即可选
+  const hasFree = devices.some(name => !(dayBookings[name] && dayBookings[name][slot]));
   if (!hasFree) return;
   e.preventDefault();
   dragStartSlot = slot;
@@ -225,6 +323,7 @@ function onSlotPointerDown(e, slot) {
 }
 
 function onMineRunPointerDown(e, slotStart, slotEnd, equipmentNames) {
+  if (e.target.closest('.mine-action-btn')) return;
   e.preventDefault();
   mouseDownOnMineRun = { slotStart, slotEnd, equipmentNames };
   document.addEventListener('mouseup', onMineRunMouseUp);
@@ -239,6 +338,7 @@ function onMineRunMouseUp() {
     equipmentNames: mouseDownOnMineRun.equipmentNames
   };
   mouseDownOnMineRun = null;
+  const room = document.getElementById('room').value;
   openCancelModal();
 }
 
@@ -250,7 +350,7 @@ function onDocMouseMove(e) {
   if (block && !block.classList.contains('slot-taken')) {
     slot = block.dataset.slot;
   }
-  // 拖拽时按鼠标 Y 对应时间线行计算 slot，避免与时间线错位
+  // 拖到空白处（如块与块之间）时用 Y 坐标对应时间行
   if (slot == null) {
     const timeline = document.getElementById('dayTimeline');
     if (timeline && timeline.contains(target)) {
@@ -270,10 +370,9 @@ function onDocMouseMove(e) {
 }
 
 function updateDragRange() {
+  const range = dragStartSlot != null && dragEndSlot != null ? getSlotRange(dragStartSlot, dragEndSlot) : [];
   document.querySelectorAll('.slot-block[data-slot]').forEach(el => {
-    const slot = el.dataset.slot;
-    const inRange = dragStartSlot != null && dragEndSlot != null && getSlotRange(dragStartSlot, dragEndSlot).includes(slot);
-    el.classList.toggle('drag-range', inRange);
+    el.classList.toggle('drag-range', range.includes(el.dataset.slot));
   });
 }
 
@@ -282,12 +381,21 @@ function onDocMouseUp() {
   document.removeEventListener('mouseup', onDocMouseUp);
   if (dragStartSlot == null) return;
   const room = document.getElementById('room').value;
-  const slots = getSlotRange(dragStartSlot, dragEndSlot);
+  let slots;
+  if (isDragging) {
+    slots = getSlotRange(dragStartSlot, dragEndSlot);
+  } else {
+    slots = [dragStartSlot];
+  }
 
-  if (isDragging && slots.length > 0) {
+  if (awaitingTimeForSwitch && slots.length > 0) {
+    pendingBookingSlots = slots;
+    awaitingTimeForSwitch = false;
+    openBookingModal();
+  } else if (isDragging && slots.length > 0) {
     pendingBookingSlots = slots;
     openBookingModal();
-  } else {
+  } else if (slots.length > 0) {
     const dateStr = formatDate(currentDate);
     const dayBookings = getBookingsForDay(dateStr);
     const devices = getEquipmentByRoom(room).map(e => e.name);
@@ -300,7 +408,7 @@ function onDocMouseUp() {
       };
       openCancelModal();
     } else {
-      pendingBookingSlots = [dragStartSlot];
+      pendingBookingSlots = slots;
       openBookingModal();
     }
   }
@@ -314,6 +422,8 @@ function onDocMouseUp() {
 // ---------- 预约确认弹窗 ----------
 function openBookingModal() {
   if (!pendingBookingSlots || pendingBookingSlots.length === 0) return;
+  const hintEl = document.getElementById('calendarHint');
+  if (hintEl) hintEl.innerHTML = CALENDAR_HINT_DEFAULT;
   const room = document.getElementById('room').value;
   const startSlot = pendingBookingSlots[0];
   const endSlot = pendingBookingSlots[pendingBookingSlots.length - 1];
@@ -345,6 +455,107 @@ function closeBookingModal() {
   document.getElementById('bookingModal').classList.add('hidden');
   document.getElementById('bookingModal').classList.remove('flex');
   pendingBookingSlots = null;
+  pendingSwitchFromEquipment = null;
+  pendingSwitchFromSlots = null;
+}
+
+// ---------- 新建预约弹窗（选时间 + 设备，无需拖拽） ----------
+function openNewBookingModal() {
+  const room = document.getElementById('room').value;
+  if (!room) {
+    alert('请先选择房间。');
+    return;
+  }
+  document.getElementById('newBookingDate').textContent = '预约日期：' + formatDateDisplay(currentDate);
+  const startSelect = document.getElementById('newBookingStart');
+  startSelect.innerHTML = '';
+  TIME_SLOTS.forEach(slot => {
+    const opt = document.createElement('option');
+    opt.value = slot;
+    opt.textContent = slot;
+    startSelect.appendChild(opt);
+  });
+  updateNewBookingEndOptions();
+  const list = document.getElementById('newBookingEquipmentList');
+  list.innerHTML = '';
+  getEquipmentByRoom(room).forEach(equip => {
+    const label = document.createElement('label');
+    label.className = 'flex items-center gap-2 cursor-pointer hover:bg-slate-100 rounded px-2 py-1.5';
+    const input = document.createElement('input');
+    input.type = 'radio';
+    input.name = 'newBookingEquipment';
+    input.className = 'rounded border-slate-300 text-primary focus:ring-primary';
+    input.value = equip.name;
+    const span = document.createElement('span');
+    span.className = 'text-sm text-slate-700';
+    span.textContent = equip.name + '（' + equip.manager + '）';
+    label.appendChild(input);
+    label.appendChild(span);
+    list.appendChild(label);
+  });
+  document.getElementById('newBookingModal').classList.remove('hidden');
+  document.getElementById('newBookingModal').classList.add('flex');
+}
+
+function updateNewBookingEndOptions() {
+  const startSelect = document.getElementById('newBookingStart');
+  const endSelect = document.getElementById('newBookingEnd');
+  const startSlot = startSelect.value;
+  const startIdx = TIME_SLOTS.indexOf(startSlot);
+  if (startIdx === -1) return;
+  endSelect.innerHTML = '';
+  for (let i = startIdx; i < TIME_SLOTS.length; i++) {
+    const opt = document.createElement('option');
+    opt.value = TIME_SLOTS[i];
+    opt.textContent = TIME_SLOTS[i];
+    endSelect.appendChild(opt);
+  }
+}
+
+function closeNewBookingModal() {
+  document.getElementById('newBookingModal').classList.add('hidden');
+  document.getElementById('newBookingModal').classList.remove('flex');
+}
+
+function confirmNewBooking() {
+  const room = document.getElementById('room').value;
+  if (!room) return;
+  const startSlot = document.getElementById('newBookingStart').value;
+  const endSlot = document.getElementById('newBookingEnd').value;
+  const chosen = document.querySelector('#newBookingEquipmentList input:checked');
+  const equipName = chosen ? chosen.value : null;
+  if (!equipName) {
+    alert('请选择一台设备。');
+    return;
+  }
+  const slots = getSlotRange(startSlot, endSlot);
+  if (slots.length === 0) {
+    alert('请选择有效的时段（结束时间不早于开始时间）。');
+    return;
+  }
+  const dateStr = formatDate(currentDate);
+  const dayBookings = getBookingsForDay(dateStr);
+  const occupied = slots.some(s => (dayBookings[equipName] || {})[s]);
+  if (occupied) {
+    alert('该设备在此时段已被预约，请选择其他时段或设备。');
+    return;
+  }
+  if (!bookings[dateStr]) bookings[dateStr] = {};
+  if (!bookings[dateStr][equipName]) bookings[dateStr][equipName] = {};
+  slots.forEach(s => {
+    bookings[dateStr][equipName][s] = currentUser;
+  });
+  localStorage.setItem('bookings', JSON.stringify(bookings));
+  closeNewBookingModal();
+  showToast('预约成功');
+  renderDayCalendar();
+  if (!document.getElementById('overviewTodayModal').classList.contains('hidden')) {
+    renderOverviewTodayContent(new Date());
+  }
+  if (!document.getElementById('overviewWeekModal').classList.contains('hidden')) {
+    bookings = JSON.parse(localStorage.getItem('bookings') || '{}');
+    renderOverviewWeekContent();
+  }
 }
 
 function confirmBooking() {
@@ -363,16 +574,73 @@ function confirmBooking() {
     alert('该设备在此时间段已被预约，请选择其他设备或时段。');
     return;
   }
+  // 若从「改约其他设备」进入，先取消原设备在「原时段」的预约（pendingSwitchFromSlots）
+  if (pendingSwitchFromEquipment && pendingSwitchFromEquipment.length > 0 && pendingSwitchFromSlots) {
+    pendingSwitchFromEquipment.forEach(oldEquip => {
+      if (!bookings[dateStr] || !bookings[dateStr][oldEquip]) return;
+      pendingSwitchFromSlots.forEach(s => delete bookings[dateStr][oldEquip][s]);
+      if (Object.keys(bookings[dateStr][oldEquip]).length === 0) delete bookings[dateStr][oldEquip];
+    });
+    if (Object.keys(bookings[dateStr] || {}).length === 0) delete bookings[dateStr];
+    pendingSwitchFromEquipment = null;
+    pendingSwitchFromSlots = null;
+  }
   if (!bookings[dateStr]) bookings[dateStr] = {};
   if (!bookings[dateStr][equipName]) bookings[dateStr][equipName] = {};
   freeSlots.forEach(s => {
     bookings[dateStr][equipName][s] = currentUser;
   });
   localStorage.setItem('bookings', JSON.stringify(bookings));
-  closeBookingModal();
   const msg = freeSlots.length < pendingBookingSlots.length ? '预约成功（部分时段已被占用）' : '预约成功';
   showToast(msg);
+  closeBookingModal();
   renderDayCalendar();
+  if (!document.getElementById('overviewTodayModal').classList.contains('hidden')) {
+    renderOverviewTodayContent(new Date());
+  }
+  if (!document.getElementById('overviewWeekModal').classList.contains('hidden')) {
+    renderOverviewWeekContent();
+  }
+}
+
+// ---------- 点击「我的预约」时的选择弹窗 ----------
+function openMineChoiceModal() {
+  if (!pendingCancelRun || !pendingCancelRun.equipmentNames.length) return;
+  const timeText = pendingCancelRun.slotStart === pendingCancelRun.slotEnd
+    ? pendingCancelRun.slotStart
+    : pendingCancelRun.slotStart + ' － ' + pendingCancelRun.slotEnd;
+  document.getElementById('mineChoiceModalText').textContent =
+    '时间段：' + timeText + '，已预约：' + pendingCancelRun.equipmentNames.join('、') + '。';
+  document.getElementById('mineChoiceModal').classList.remove('hidden');
+  document.getElementById('mineChoiceModal').classList.add('flex');
+}
+
+function closeMineChoiceModal() {
+  document.getElementById('mineChoiceModal').classList.add('hidden');
+  document.getElementById('mineChoiceModal').classList.remove('flex');
+  pendingCancelRun = null;
+}
+
+const CALENDAR_HINT_DEFAULT = '请先选择房间。在日历中<strong>点击</strong>或<strong>拖拽</strong>选择时间段，再在弹窗中选择设备确认预约；点击自己的预约可取消。';
+const CALENDAR_HINT_SWITCH_TIME = '请在地图上<strong>点击</strong>或<strong>拖拽</strong>选择新的时间段，再在弹窗中选择设备。';
+
+/** 选择「预约本实验室其他设备」：关闭弹窗，让用户在地图上选新时间段，选完再打开预约弹窗 */
+function chooseSwitchEquipment() {
+  if (!pendingCancelRun) return;
+  pendingSwitchFromEquipment = pendingCancelRun.equipmentNames.slice();
+  pendingSwitchFromSlots = getSlotRange(pendingCancelRun.slotStart, pendingCancelRun.slotEnd);
+  closeMineChoiceModal();
+  awaitingTimeForSwitch = true;
+  const hintEl = document.getElementById('calendarHint');
+  if (hintEl) hintEl.innerHTML = CALENDAR_HINT_SWITCH_TIME;
+  showToast('请在地图上点击或拖拽选择新的时间段');
+}
+
+/** 选择「取消该预约」：仅关闭选择弹窗并打开取消弹窗（不清 pendingCancelRun） */
+function chooseCancelBooking() {
+  document.getElementById('mineChoiceModal').classList.add('hidden');
+  document.getElementById('mineChoiceModal').classList.remove('flex');
+  openCancelModal();
 }
 
 // ---------- 取消预约弹窗 ----------
@@ -403,6 +671,15 @@ function confirmCancel() {
   localStorage.setItem('bookings', JSON.stringify(bookings));
   closeCancelModal();
   renderDayCalendar();
+  // 若今日/本周概览弹窗正打开，用最新数据刷新（与 localStorage 一致）
+  if (!document.getElementById('overviewTodayModal').classList.contains('hidden')) {
+    bookings = JSON.parse(localStorage.getItem('bookings') || '{}');
+    renderOverviewTodayContent(new Date());
+  }
+  if (!document.getElementById('overviewWeekModal').classList.contains('hidden')) {
+    bookings = JSON.parse(localStorage.getItem('bookings') || '{}');
+    renderOverviewWeekContent();
+  }
 }
 
 function showToast(message) {
@@ -455,6 +732,7 @@ function getWeekDates(forDate) {
 function renderDayTimelineReadonly(container, room, dateStr) {
   const dayBookings = getBookingsForDay(dateStr);
   const runs = getRunsByRoom(room, dayBookings);
+  assignOverlapColumns(runs);
   container.classList.add('day-timeline', 'overview-day-timeline');
   container.style.setProperty('--time-slots-count', TIME_SLOTS.length);
 
@@ -472,6 +750,8 @@ function renderDayTimelineReadonly(container, room, dateStr) {
     const runBlock = document.createElement('div');
     runBlock.className = 'run-block';
     runBlock.style.gridRow = (run.startIdx + 1) + ' / span ' + N;
+    runBlock.style.setProperty('--run-column', String(run.column ?? 0));
+    runBlock.style.setProperty('--run-total-columns', String(run.totalColumns ?? 1));
 
     const runContent = document.createElement('div');
     runContent.className = 'run-content overview-run ' + (run.status === 'empty' ? 'empty-run' : '');
@@ -485,12 +765,15 @@ function renderDayTimelineReadonly(container, room, dateStr) {
       const block = document.createElement('div');
       block.className = 'slot-block slot-mine slot-run';
       const names = (run.equipmentNames || []).join('、');
-      block.textContent = names ? '我的预约（' + names + '）' : '我的预约';
+      block.textContent = names || '';
       runContent.appendChild(block);
     } else {
       const block = document.createElement('div');
       block.className = 'slot-block slot-taken';
-      block.textContent = '已满';
+      const deviceUser = (run.equipmentNames && run.equipmentNames[0] && run.user)
+        ? run.equipmentNames[0] + ' ' + run.user
+        : '已满';
+      block.textContent = deviceUser;
       runContent.appendChild(block);
     }
 
@@ -588,6 +871,7 @@ function renderOverviewWeekContent() {
 }
 
 function openOverviewToday() {
+  bookings = JSON.parse(localStorage.getItem('bookings') || '{}');
   const today = new Date();
   document.getElementById('overviewTodayDate').textContent = formatDateDisplay(today);
   renderOverviewTodayContent(today);
@@ -601,6 +885,7 @@ function closeOverviewToday() {
 }
 
 function openOverviewWeek() {
+  bookings = JSON.parse(localStorage.getItem('bookings') || '{}');
   renderOverviewWeekContent();
   document.getElementById('overviewWeekModal').classList.remove('hidden');
   document.getElementById('overviewWeekModal').classList.add('flex');
@@ -612,6 +897,26 @@ function closeOverviewWeek() {
 }
 
 // ---------- 日历渲染 ----------
+/** 在「我的预约」块内追加「取消」按钮（仅当本房间设备数 > 1 时） */
+function appendMineActionButtons(block, room, startSlot, endSlot, equipmentNames) {
+  if (!room || getEquipmentByRoom(room).length <= 1) return;
+  block.classList.add('slot-mine-has-actions');
+  const wrap = document.createElement('div');
+  wrap.className = 'mine-actions';
+  const btnCancel = document.createElement('button');
+  btnCancel.type = 'button';
+  btnCancel.className = 'mine-action-btn mine-action-cancel';
+  btnCancel.textContent = '取消';
+  btnCancel.addEventListener('click', e => {
+    e.preventDefault();
+    e.stopPropagation();
+    pendingCancelRun = { slotStart: startSlot, slotEnd: endSlot, equipmentNames: equipmentNames.slice() };
+    openCancelModal();
+  });
+  wrap.appendChild(btnCancel);
+  block.appendChild(wrap);
+}
+
 /** 找到包含 slotIndex 的 run */
 function getRunAtSlot(runs, slotIndex) {
   for (let r = 0; r < runs.length; r++) {
@@ -640,11 +945,9 @@ function renderDayCalendar() {
   container.classList.add('day-timeline');
   container.style.setProperty('--time-slots-count', TIME_SLOTS.length);
   const runs = getRunsByRoom(room, dayBookings);
+  assignOverlapColumns(runs);
 
   for (let i = 0; i < TIME_SLOTS.length; i++) {
-    const runAtSlot = getRunAtSlot(runs, i);
-    const isSingleSlot = runAtSlot && runAtSlot.endIdx === runAtSlot.startIdx;
-
     const row = document.createElement('div');
     row.className = 'timeline-row';
     row.style.gridRow = String(i + 1);
@@ -656,30 +959,6 @@ function renderDayCalendar() {
     const contentCell = document.createElement('div');
     contentCell.className = 'timeline-row-content';
 
-    if (isSingleSlot) {
-      const startSlot = TIME_SLOTS[runAtSlot.startIdx];
-      const endSlot = TIME_SLOTS[runAtSlot.endIdx];
-      if (runAtSlot.status === 'empty') {
-        const block = document.createElement('div');
-        block.className = 'slot-block';
-        block.dataset.slot = startSlot;
-        block.textContent = '点击或拖拽';
-        block.addEventListener('mousedown', e => onSlotPointerDown(e, startSlot));
-        contentCell.appendChild(block);
-      } else if (runAtSlot.status === 'mine') {
-        const block = document.createElement('div');
-        block.className = 'slot-block slot-mine slot-run';
-        const names = (runAtSlot.equipmentNames || []).join('、');
-        block.textContent = names ? '我的预约（' + names + '）点击取消' : '我的预约（点击取消）';
-        block.addEventListener('mousedown', e => onMineRunPointerDown(e, startSlot, endSlot, runAtSlot.equipmentNames || []));
-        contentCell.appendChild(block);
-      } else {
-        const block = document.createElement('div');
-        block.className = 'slot-block slot-taken';
-        block.textContent = '已满';
-        contentCell.appendChild(block);
-      }
-    }
     row.appendChild(label);
     row.appendChild(contentCell);
     container.appendChild(row);
@@ -687,7 +966,6 @@ function renderDayCalendar() {
 
   runs.forEach(run => {
     const N = run.endIdx - run.startIdx + 1;
-    if (N <= 1) return;
     const startSlot = TIME_SLOTS[run.startIdx];
     const endSlot = TIME_SLOTS[run.endIdx];
 
@@ -695,15 +973,18 @@ function renderDayCalendar() {
     runBlock.className = 'run-block';
     runBlock.style.gridRow = (run.startIdx + 1) + ' / span ' + N;
     runBlock.style.gridColumn = '2';
+    runBlock.style.setProperty('--run-column', String(run.column ?? 0));
+    runBlock.style.setProperty('--run-total-columns', String(run.totalColumns ?? 1));
 
     const runContent = document.createElement('div');
     runContent.className = 'run-content ' + (run.status === 'empty' ? 'empty-run' : '');
 
     if (run.status === 'empty') {
+      /* 每格一块、固定 44px，与时间轴对齐；拖拽时只高亮选中范围 */
       for (let j = run.startIdx; j <= run.endIdx; j++) {
         const slot = TIME_SLOTS[j];
         const block = document.createElement('div');
-        block.className = 'slot-block';
+        block.className = 'slot-block slot-block-fixed';
         block.dataset.slot = slot;
         block.textContent = '点击或拖拽';
         block.addEventListener('mousedown', e => onSlotPointerDown(e, slot));
@@ -713,13 +994,29 @@ function renderDayCalendar() {
       const block = document.createElement('div');
       block.className = 'slot-block slot-mine slot-run';
       const names = (run.equipmentNames || []).join('、');
-      block.textContent = names ? '我的预约（' + names + '）点击取消' : '我的预约（点击取消）';
-      block.addEventListener('mousedown', e => onMineRunPointerDown(e, startSlot, endSlot, run.equipmentNames || []));
+      const label = document.createElement('span');
+      label.className = 'mine-label';
+label.textContent = names || '';
+        block.appendChild(label);
+      const equipCount = getEquipmentByRoom(room).length;
+      if (equipCount <= 1) {
+        const hint = document.createElement('span');
+        hint.className = 'mine-hint';
+        hint.textContent = ' 点击取消';
+        block.appendChild(hint);
+        block.addEventListener('mousedown', e => onMineRunPointerDown(e, startSlot, endSlot, run.equipmentNames || []));
+      } else {
+        appendMineActionButtons(block, room, startSlot, endSlot, run.equipmentNames || []);
+        block.addEventListener('mousedown', e => onMineRunPointerDown(e, startSlot, endSlot, run.equipmentNames || []));
+      }
       runContent.appendChild(block);
     } else {
       const block = document.createElement('div');
       block.className = 'slot-block slot-taken';
-      block.textContent = '已满';
+      const deviceUser = (run.equipmentNames && run.equipmentNames[0] && run.user)
+        ? run.equipmentNames[0] + ' ' + run.user
+        : '已满';
+      block.textContent = deviceUser;
       runContent.appendChild(block);
     }
 
@@ -728,5 +1025,6 @@ function renderDayCalendar() {
   });
 }
 
-// 初始化
+// 初始化：恢复登录状态（若有），并初始化房间下拉
+restoreLoginIfSaved();
 initRoomSelect();

@@ -47,6 +47,9 @@
       <div class="max-w-6xl mx-auto px-4 sm:px-6 flex items-center justify-between h-14">
         <h1 class="text-lg font-semibold text-slate-900">实验室预约</h1>
         <div class="flex items-center gap-3">
+          <button type="button" onclick="openNewBookingModal()" class="text-sm px-3 py-1.5 rounded-lg bg-primary text-white hover:bg-primary-hover transition">
+            新建预约
+          </button>
           <button type="button" onclick="openOverviewToday()" class="text-sm text-slate-600 hover:text-slate-900 px-3 py-1.5 rounded-lg hover:bg-slate-100 transition">
             今日概览
           </button>
@@ -110,6 +113,41 @@
     </main>
   </div>
 
+  <!-- 新建预约弹窗：选择时间 + 设备，无需拖拽 -->
+  <div id="newBookingModal" class="fixed inset-0 z-50 hidden flex items-center justify-center p-4">
+    <div class="modal-backdrop absolute inset-0 rounded-2xl" onclick="closeNewBookingModal()"></div>
+    <div class="relative bg-white rounded-2xl shadow-xl border border-slate-200 w-full max-w-md p-6">
+      <h3 class="text-lg font-semibold text-slate-900 mb-4">新建预约</h3>
+      <p id="newBookingDate" class="text-sm text-slate-500 mb-4"></p>
+      <div class="space-y-4">
+        <div>
+          <label class="block text-sm font-medium text-slate-600 mb-1">开始时间</label>
+          <select id="newBookingStart" onchange="updateNewBookingEndOptions()"
+            class="w-full px-4 py-2 rounded-lg border border-slate-200 bg-white text-slate-800 focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent">
+          </select>
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-slate-600 mb-1">结束时间</label>
+          <select id="newBookingEnd"
+            class="w-full px-4 py-2 rounded-lg border border-slate-200 bg-white text-slate-800 focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent">
+          </select>
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-slate-600 mb-2">选择设备</label>
+          <div id="newBookingEquipmentList" class="space-y-2 max-h-48 overflow-y-auto border border-slate-200 rounded-lg p-3 bg-slate-50"></div>
+        </div>
+      </div>
+      <div class="flex gap-3 justify-end mt-6">
+        <button type="button" onclick="closeNewBookingModal()" class="px-4 py-2 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 transition">
+          取消
+        </button>
+        <button type="button" onclick="confirmNewBooking()" class="px-4 py-2 rounded-lg bg-primary text-white font-medium hover:bg-primary-hover transition">
+          确认预约
+        </button>
+      </div>
+    </div>
+  </div>
+
   <!-- 确认预约弹窗：选好时间段后选一台设备（同一房间同一时段仅可预约一台） -->
   <div id="bookingModal" class="fixed inset-0 z-50 hidden flex items-center justify-center p-4">
     <div class="modal-backdrop absolute inset-0 rounded-2xl" onclick="closeBookingModal()"></div>
@@ -125,6 +163,23 @@
         <button type="button" onclick="confirmBooking()" id="confirmBookingBtn"
           class="px-4 py-2 rounded-lg bg-primary text-white font-medium hover:bg-primary-hover transition">
           确认预约
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 点击「我的预约」时的选择弹窗（仅取消） -->
+  <div id="mineChoiceModal" class="fixed inset-0 z-50 hidden flex items-center justify-center p-4">
+    <div class="modal-backdrop absolute inset-0 rounded-2xl" onclick="closeMineChoiceModal()"></div>
+    <div class="relative bg-white rounded-2xl shadow-xl border border-slate-200 w-full max-w-md p-6">
+      <h3 class="text-lg font-semibold text-slate-900 mb-1">此时间段您已有预约</h3>
+      <p id="mineChoiceModalText" class="text-sm text-slate-600 mb-5"></p>
+      <div class="flex flex-col gap-2">
+        <button type="button" onclick="chooseCancelBooking()" class="w-full px-4 py-3 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 transition text-left">
+          取消该预约
+        </button>
+        <button type="button" onclick="closeMineChoiceModal()" class="w-full px-4 py-2 rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50 transition text-sm">
+          返回
         </button>
       </div>
     </div>

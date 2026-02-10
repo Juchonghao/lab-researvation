@@ -66,6 +66,16 @@ body {
   display: flex;
   flex-direction: column;
   z-index: 1;
+  /* 有重叠时左右分栏：按列宽和左偏移 */
+  width: calc(100% / var(--run-total-columns, 1));
+  margin-left: calc(var(--run-column, 0) * 100% / var(--run-total-columns, 1));
+  box-sizing: border-box;
+}
+
+/* run-content 必须占满 run-block，内部的 slot-block-run 才能填满高度 */
+.run-block .run-content {
+  flex: 1;
+  min-height: 0;
 }
 
 .run-time {
@@ -115,6 +125,13 @@ body {
   flex: 1;
 }
 
+/* 多格 run 内每格一块、固定 44px，与左侧时间轴严格对齐，拖拽时只高亮选中格 */
+.run-block .run-content .slot-block.slot-block-fixed {
+  flex: 0 0 44px;
+  min-height: 44px;
+  height: 44px;
+}
+
 .slot-block:hover {
   background: rgba(99, 102, 241, 0.12);
   color: #6366f1;
@@ -134,6 +151,63 @@ body {
 .slot-block.slot-mine.slot-run {
   flex: none;
   height: 100%;
+}
+
+/* 「我的预约」块内：预约其他设备 / 取消 按钮（多设备房间） */
+.slot-block.slot-mine.slot-run.slot-mine-has-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  justify-content: center;
+}
+
+.slot-block.slot-mine .mine-label {
+  flex: 0 0 auto;
+}
+
+.slot-block.slot-mine .mine-hint {
+  flex: 0 0 auto;
+  opacity: 0.9;
+  font-size: 0.7rem;
+}
+
+.slot-block.slot-mine .mine-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  flex: 0 0 auto;
+}
+
+.slot-block.slot-mine .mine-action-btn {
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  font-size: 0.7rem;
+  border-radius: 6px;
+  border: none;
+  cursor: pointer;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.slot-block.slot-mine .mine-action-btn.mine-action-switch {
+  background: rgba(99, 102, 241, 0.2);
+  color: #6366f1;
+}
+
+.slot-block.slot-mine .mine-action-btn.mine-action-switch:hover {
+  background: rgba(99, 102, 241, 0.35);
+}
+
+.slot-block.slot-mine .mine-action-btn.mine-action-cancel {
+  background: rgba(239, 68, 68, 0.15);
+  color: #dc2626;
+}
+
+.slot-block.slot-mine .mine-action-btn.mine-action-cancel:hover {
+  background: rgba(239, 68, 68, 0.25);
 }
 
 .slot-block.slot-taken {
@@ -264,12 +338,20 @@ body {
 .week-overview-cell-content {
   font-size: 0.7rem;
   color: #475569;
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 2px;
+  align-items: center;
 }
 .week-overview-cell-content.week-overview-empty {
   color: #cbd5e1;
   text-align: center;
+  justify-content: center;
 }
 .week-overview-booking {
+  flex: 1 1 0;
+  min-width: 0;
   padding: 1px 4px;
   border-radius: 4px;
   background: rgba(99, 102, 241, 0.1);
