@@ -136,6 +136,11 @@
           <label class="block text-sm font-medium text-slate-600 mb-2">选择设备</label>
           <div id="newBookingEquipmentList" class="space-y-2 max-h-48 overflow-y-auto border border-slate-200 rounded-lg p-3 bg-slate-50"></div>
         </div>
+        <div>
+          <label class="block text-sm font-medium text-slate-600 mb-1">备注（选填）</label>
+          <input id="newBookingNote" type="text" placeholder="如：样品编号、用途等"
+            class="w-full px-4 py-2 rounded-lg border border-slate-200 bg-white text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent">
+        </div>
       </div>
       <div class="flex gap-3 justify-end mt-6">
         <button type="button" onclick="closeNewBookingModal()" class="px-4 py-2 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 transition">
@@ -156,6 +161,11 @@
       <p id="bookingModalTime" class="text-sm text-slate-500 mb-3"></p>
       <label class="block text-sm font-medium text-slate-600 mb-2">选择设备（同一时段仅可预约一台）</label>
       <div id="bookingModalEquipmentList" class="mb-4 max-h-48 overflow-y-auto space-y-2 border border-slate-200 rounded-lg p-3 bg-slate-50"></div>
+      <div class="mb-4">
+        <label class="block text-sm font-medium text-slate-600 mb-1">备注（选填）</label>
+        <input id="bookingModalNote" type="text" placeholder="如：样品编号、用途等"
+          class="w-full px-4 py-2 rounded-lg border border-slate-200 bg-white text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent">
+      </div>
       <div class="flex gap-3 justify-end">
         <button type="button" onclick="closeBookingModal()" class="px-4 py-2 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 transition">
           取消
@@ -210,6 +220,10 @@
       <div class="px-6 py-4 border-b border-slate-100 flex-shrink-0">
         <h3 class="text-lg font-semibold text-slate-900">今日所有实验室预约</h3>
         <p id="overviewTodayDate" class="text-sm text-slate-500 mt-0.5"></p>
+        <div class="flex gap-2 mt-3">
+          <button type="button" id="overviewTodayModeRoom" onclick="setOverviewTodayMode('room')" class="overview-today-mode-btn px-3 py-1.5 rounded-lg text-sm font-medium border transition">按房间</button>
+          <button type="button" id="overviewTodayModeEquipment" onclick="setOverviewTodayMode('equipment')" class="overview-today-mode-btn px-3 py-1.5 rounded-lg text-sm font-medium border transition">按设备</button>
+        </div>
       </div>
       <div id="overviewTodayContent" class="p-6 overflow-y-auto flex-1 text-sm"></div>
       <div class="px-6 py-4 border-t border-slate-100 flex-shrink-0">

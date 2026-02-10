@@ -38,7 +38,20 @@ const TIME_SLOTS = getTimeSlots();
 let currentUser = null;
 let currentDate = new Date();
 let bookings = JSON.parse(localStorage.getItem('bookings') || '{}');
-// bookings[date][equipmentName][slotTime] = username
+// bookings[date][equipmentName][slotTime] = username 或 { user, note }
+
+function getBookingUser(val) {
+  if (val == null) return '';
+  return typeof val === 'string' ? val : (val.user || '');
+}
+function getBookingNote(val) {
+  if (val == null) return '';
+  return typeof val === 'string' ? '' : (val.note || '');
+}
+function hasBooking(val) {
+  if (val == null) return false;
+  return typeof val === 'string' ? true : !!val.user;
+}
 
 function getRooms() {
   const set = new Set(EQUIPMENT_LIST.map(e => e.room));
@@ -102,12 +115,12 @@ const STORAGE_KEY_USER = 'labReservationUser';
 function login() {
   const user = document.getElementById('username').value.trim();
   const pass = document.getElementById('password').value;
-  if (user === 'admin' && pass === 'lab123') {
-    currentUser = 'admin';
+  if (user === 'LRG501' && pass === 'LRG501') {
+    currentUser = user;
     localStorage.setItem(STORAGE_KEY_USER, currentUser);
     document.getElementById('login').classList.add('hidden');
     document.getElementById('app').classList.remove('hidden');
-    document.getElementById('userLabel').textContent = user;
+    document.getElementById('userLabel').textContent = '';
     currentDate = new Date();
     initRoomSelect();
     renderDateNav();
@@ -131,7 +144,7 @@ function restoreLoginIfSaved() {
     currentUser = saved;
     document.getElementById('login').classList.add('hidden');
     document.getElementById('app').classList.remove('hidden');
-    document.getElementById('userLabel').textContent = saved;
+    document.getElementById('userLabel').textContent = '';
     currentDate = new Date();
     initRoomSelect();
     renderDateNav();
@@ -206,7 +219,7 @@ function getRunsByRoom(room, dayBookings) {
   // 1) 空档：至少有一台设备空闲的连续时段合并为一个 empty run
   for (let i = 0; i < TIME_SLOTS.length; i++) {
     const slot = TIME_SLOTS[i];
-    const hasFree = devices.some(name => !(dayBookings[name] && dayBookings[name][slot]));
+    const hasFree = devices.some(name => !hasBooking(dayBookings[name] && dayBookings[name][slot]));
     if (!hasFree) continue;
     if (runs.length > 0 && runs[runs.length - 1].status === 'empty') {
       runs[runs.length - 1].endIdx = i;
@@ -220,21 +233,24 @@ function getRunsByRoom(room, dayBookings) {
     const slotToUser = dayBookings[equipName] || {};
     let j = 0;
     while (j < TIME_SLOTS.length) {
-      const user = slotToUser[TIME_SLOTS[j]];
+      const val = slotToUser[TIME_SLOTS[j]];
+      const user = getBookingUser(val);
       if (!user) {
         j++;
         continue;
       }
       const startIdx = j;
-      while (j < TIME_SLOTS.length && slotToUser[TIME_SLOTS[j]] === user) j++;
+      while (j < TIME_SLOTS.length && getBookingUser(slotToUser[TIME_SLOTS[j]]) === user) j++;
       const endIdx = j - 1;
       const status = user === currentUser ? 'mine' : 'full';
+      const note = getBookingNote(slotToUser[TIME_SLOTS[startIdx]]);
       runs.push({
         startIdx,
         endIdx,
         status,
         equipmentNames: [equipName],
-        user
+        user,
+        note
       });
     }
   });
@@ -311,7 +327,7 @@ function onSlotPointerDown(e, slot) {
   const dayBookings = getBookingsForDay(formatDate(currentDate));
   const devices = getEquipmentByRoom(room).map(e => e.name);
   // 该时段至少有一台设备空闲即可选
-  const hasFree = devices.some(name => !(dayBookings[name] && dayBookings[name][slot]));
+  const hasFree = devices.some(name => !hasBooking(dayBookings[name] && dayBookings[name][slot]));
   if (!hasFree) return;
   e.preventDefault();
   dragStartSlot = slot;
@@ -399,12 +415,12 @@ function onDocMouseUp() {
     const dateStr = formatDate(currentDate);
     const dayBookings = getBookingsForDay(dateStr);
     const devices = getEquipmentByRoom(room).map(e => e.name);
-    const user = devices.some(name => (dayBookings[name] && dayBookings[name][dragStartSlot]) === currentUser);
+    const user = devices.some(name => getBookingUser(dayBookings[name] && dayBookings[name][dragStartSlot]) === currentUser);
     if (user) {
       pendingCancelRun = {
         slotStart: dragStartSlot,
         slotEnd: dragStartSlot,
-        equipmentNames: devices.filter(name => dayBookings[name] && dayBookings[name][dragStartSlot] === currentUser)
+        equipmentNames: devices.filter(name => hasBooking(dayBookings[name] && dayBookings[name][dragStartSlot]) && getBookingUser(dayBookings[name][dragStartSlot]) === currentUser)
       };
       openCancelModal();
     } else {
@@ -447,6 +463,8 @@ function openBookingModal() {
     label.appendChild(span);
     list.appendChild(label);
   });
+  const noteEl = document.getElementById('bookingModalNote');
+  if (noteEl) noteEl.value = '';
   document.getElementById('bookingModal').classList.remove('hidden');
   document.getElementById('bookingModal').classList.add('flex');
 }
@@ -493,6 +511,8 @@ function openNewBookingModal() {
     label.appendChild(span);
     list.appendChild(label);
   });
+  const noteEl = document.getElementById('newBookingNote');
+  if (noteEl) noteEl.value = '';
   document.getElementById('newBookingModal').classList.remove('hidden');
   document.getElementById('newBookingModal').classList.add('flex');
 }
@@ -535,17 +555,19 @@ function confirmNewBooking() {
   }
   const dateStr = formatDate(currentDate);
   const dayBookings = getBookingsForDay(dateStr);
-  const occupied = slots.some(s => (dayBookings[equipName] || {})[s]);
+  const occupied = slots.some(s => hasBooking((dayBookings[equipName] || {})[s]));
   if (occupied) {
     alert('该设备在此时段已被预约，请选择其他时段或设备。');
     return;
   }
+  const note = (document.getElementById('newBookingNote') && document.getElementById('newBookingNote').value || '').trim();
   if (!bookings[dateStr]) bookings[dateStr] = {};
   if (!bookings[dateStr][equipName]) bookings[dateStr][equipName] = {};
   slots.forEach(s => {
-    bookings[dateStr][equipName][s] = currentUser;
+    bookings[dateStr][equipName][s] = note ? { user: currentUser, note } : currentUser;
   });
   localStorage.setItem('bookings', JSON.stringify(bookings));
+  if (document.getElementById('newBookingNote')) document.getElementById('newBookingNote').value = '';
   closeNewBookingModal();
   showToast('预约成功');
   renderDayCalendar();
@@ -569,11 +591,12 @@ function confirmBooking() {
   const dateStr = formatDate(currentDate);
   const dayBookings = getBookingsForDay(dateStr);
   const eq = dayBookings[equipName] || {};
-  const freeSlots = pendingBookingSlots.filter(s => !eq[s]);
+  const freeSlots = pendingBookingSlots.filter(s => !hasBooking(eq[s]));
   if (freeSlots.length === 0) {
     alert('该设备在此时间段已被预约，请选择其他设备或时段。');
     return;
   }
+  const note = (document.getElementById('bookingModalNote') && document.getElementById('bookingModalNote').value || '').trim();
   // 若从「改约其他设备」进入，先取消原设备在「原时段」的预约（pendingSwitchFromSlots）
   if (pendingSwitchFromEquipment && pendingSwitchFromEquipment.length > 0 && pendingSwitchFromSlots) {
     pendingSwitchFromEquipment.forEach(oldEquip => {
@@ -588,9 +611,10 @@ function confirmBooking() {
   if (!bookings[dateStr]) bookings[dateStr] = {};
   if (!bookings[dateStr][equipName]) bookings[dateStr][equipName] = {};
   freeSlots.forEach(s => {
-    bookings[dateStr][equipName][s] = currentUser;
+    bookings[dateStr][equipName][s] = note ? { user: currentUser, note } : currentUser;
   });
   localStorage.setItem('bookings', JSON.stringify(bookings));
+  if (document.getElementById('bookingModalNote')) document.getElementById('bookingModalNote').value = '';
   const msg = freeSlots.length < pendingBookingSlots.length ? '预约成功（部分时段已被占用）' : '预约成功';
   showToast(msg);
   closeBookingModal();
@@ -690,24 +714,65 @@ function showToast(message) {
 }
 
 // ---------- 今日 / 本周概览 ----------
+/** 今日概览展示模式：'room' 按房间 | 'equipment' 按设备 */
+let overviewTodayMode = 'room';
+/** 今日概览当前查看的日期（打开弹窗时设为当天） */
+let overviewTodayViewDate = null;
+
+function setOverviewTodayMode(mode) {
+  overviewTodayMode = mode;
+  document.querySelectorAll('.overview-today-mode-btn').forEach(btn => {
+    btn.classList.remove('bg-primary', 'text-white', 'border-primary');
+    btn.classList.add('border-slate-200', 'text-slate-600', 'hover:bg-slate-100');
+  });
+  const active = document.getElementById(mode === 'room' ? 'overviewTodayModeRoom' : 'overviewTodayModeEquipment');
+  if (active) {
+    active.classList.add('bg-primary', 'text-white', 'border-primary');
+    active.classList.remove('border-slate-200', 'text-slate-600', 'hover:bg-slate-100');
+  }
+  renderOverviewTodayContent(overviewTodayViewDate || new Date());
+}
+
+/** 某设备在某日的预约时段列表：[{ startSlot, endSlot, user, note }, ...] */
+function getRunsByEquipment(equipName, dayBookings) {
+  const slotToUser = dayBookings[equipName] || {};
+  const runs = [];
+  let j = 0;
+  while (j < TIME_SLOTS.length) {
+    const val = slotToUser[TIME_SLOTS[j]];
+    const user = getBookingUser(val);
+    if (!user) {
+      j++;
+      continue;
+    }
+    const startIdx = j;
+    const startSlot = TIME_SLOTS[j];
+    while (j < TIME_SLOTS.length && getBookingUser(slotToUser[TIME_SLOTS[j]]) === user) j++;
+    const endSlot = TIME_SLOTS[j - 1];
+    const note = getBookingNote(slotToUser[TIME_SLOTS[startIdx]] || val);
+    runs.push({ startSlot, endSlot, user, note });
+  }
+  return runs;
+}
 /** 某设备在某日的预约时段（连续同用户合并为 run） */
 function getBookedRunsForEquipment(dateStr, equipName) {
   const eq = (bookings[dateStr] || {})[equipName] || {};
   const runs = [];
   for (let i = 0; i < TIME_SLOTS.length; i++) {
     const slot = TIME_SLOTS[i];
-    const user = eq[slot];
+    const user = getBookingUser(eq[slot]);
     if (!user) continue;
     if (runs.length > 0 && runs[runs.length - 1].user === user && runs[runs.length - 1].endIdx === i - 1) {
       runs[runs.length - 1].endIdx = i;
     } else {
-      runs.push({ startIdx: i, endIdx: i, user });
+      runs.push({ startIdx: i, endIdx: i, user, note: getBookingNote(eq[slot]) });
     }
   }
   return runs.map(r => ({
     startSlot: TIME_SLOTS[r.startIdx],
     endSlot: TIME_SLOTS[r.endIdx],
-    user: r.user
+    user: r.user,
+    note: r.note || ''
   }));
 }
 
@@ -765,15 +830,15 @@ function renderDayTimelineReadonly(container, room, dateStr) {
       const block = document.createElement('div');
       block.className = 'slot-block slot-mine slot-run';
       const names = (run.equipmentNames || []).join('、');
-      block.textContent = names || '';
+      block.textContent = (names || '') + (run.note ? ' ' + run.note : '');
       runContent.appendChild(block);
     } else {
       const block = document.createElement('div');
       block.className = 'slot-block slot-taken';
       const deviceUser = (run.equipmentNames && run.equipmentNames[0] && run.user)
-        ? run.equipmentNames[0] + ' ' + run.user
+        ? run.equipmentNames[0]
         : '已满';
-      block.textContent = deviceUser;
+      block.textContent = deviceUser + (run.note ? ' ' + run.note : '');
       runContent.appendChild(block);
     }
 
@@ -785,11 +850,16 @@ function renderDayTimelineReadonly(container, room, dateStr) {
 function renderOverviewTodayContent(forDate) {
   const d = forDate || currentDate;
   const dateStr = formatDate(d);
-  const dayBookings = getBookingsForDay(dateStr);
-  const rooms = getRooms();
   const container = document.getElementById('overviewTodayContent');
   container.innerHTML = '';
 
+  if (overviewTodayMode === 'equipment') {
+    renderOverviewTodayByEquipment(d, dateStr, container);
+    return;
+  }
+
+  const dayBookings = getBookingsForDay(dateStr);
+  const rooms = getRooms();
   rooms.forEach(room => {
     const section = document.createElement('div');
     section.className = 'overview-today-room mb-5';
@@ -801,6 +871,43 @@ function renderOverviewTodayContent(forDate) {
     timelineWrap.className = 'overview-timeline-wrap';
     renderDayTimelineReadonly(timelineWrap, room, dateStr);
     section.appendChild(timelineWrap);
+    container.appendChild(section);
+  });
+}
+
+/** 今日概览 - 按设备：每台设备下列出今日已约时段 */
+function renderOverviewTodayByEquipment(forDate, dateStr, container) {
+  const dayBookings = getBookingsForDay(dateStr || formatDate(forDate));
+
+  EQUIPMENT_LIST.forEach(equip => {
+    const runs = getRunsByEquipment(equip.name, dayBookings);
+    const section = document.createElement('div');
+    section.className = 'overview-today-equipment mb-5';
+    const title = document.createElement('h4');
+    title.className = 'font-semibold text-slate-800 mb-2 text-sm';
+    title.textContent = equip.name + '（' + equip.room + '）';
+    section.appendChild(title);
+
+    if (runs.length === 0) {
+      const p = document.createElement('p');
+      p.className = 'text-slate-500 text-sm';
+      p.textContent = '今日无预约';
+      section.appendChild(p);
+    } else {
+      const list = document.createElement('ul');
+      list.className = 'space-y-1';
+      runs.forEach(({ startSlot, endSlot, user, note }) => {
+        const li = document.createElement('li');
+        li.className = 'flex items-center gap-2 text-slate-700';
+        const timeText = startSlot === endSlot ? startSlot : startSlot + ' － ' + endSlot;
+        const span = document.createElement('span');
+        span.textContent = timeText + (note ? '  ' + note : '');
+        if (user === currentUser) span.classList.add('text-primary', 'font-medium');
+        li.appendChild(span);
+        list.appendChild(li);
+      });
+      section.appendChild(list);
+    }
     container.appendChild(section);
   });
 }
@@ -848,17 +955,18 @@ function renderOverviewWeekContent() {
 
       const items = [];
       EQUIPMENT_LIST.forEach(equip => {
-        const user = (dayBookings[equip.name] || {})[TIME_SLOTS[ti]];
-        if (user) items.push({ name: equip.name, user });
+        const val = (dayBookings[equip.name] || {})[TIME_SLOTS[ti]];
+        const user = getBookingUser(val);
+        if (user) items.push({ name: equip.name, user, note: getBookingNote(val) });
       });
       if (items.length === 0) {
         cell.textContent = '—';
         cell.classList.add('week-overview-empty');
       } else {
-        items.forEach(({ name, user }) => {
+        items.forEach(({ name, user, note }) => {
           const span = document.createElement('div');
           span.className = 'week-overview-booking' + (user === currentUser ? ' week-overview-mine' : '');
-          span.textContent = name + ' ' + user;
+          span.textContent = name + (note ? ' ' + note : '');
           cell.appendChild(span);
         });
       }
@@ -872,9 +980,9 @@ function renderOverviewWeekContent() {
 
 function openOverviewToday() {
   bookings = JSON.parse(localStorage.getItem('bookings') || '{}');
-  const today = new Date();
-  document.getElementById('overviewTodayDate').textContent = formatDateDisplay(today);
-  renderOverviewTodayContent(today);
+  overviewTodayViewDate = new Date();
+  document.getElementById('overviewTodayDate').textContent = formatDateDisplay(overviewTodayViewDate);
+  setOverviewTodayMode(overviewTodayMode);
   document.getElementById('overviewTodayModal').classList.remove('hidden');
   document.getElementById('overviewTodayModal').classList.add('flex');
 }
@@ -996,8 +1104,8 @@ function renderDayCalendar() {
       const names = (run.equipmentNames || []).join('、');
       const label = document.createElement('span');
       label.className = 'mine-label';
-label.textContent = names || '';
-        block.appendChild(label);
+      label.textContent = (names || '') + (run.note ? ' ' + run.note : '');
+      block.appendChild(label);
       const equipCount = getEquipmentByRoom(room).length;
       if (equipCount <= 1) {
         const hint = document.createElement('span');
@@ -1014,9 +1122,9 @@ label.textContent = names || '';
       const block = document.createElement('div');
       block.className = 'slot-block slot-taken';
       const deviceUser = (run.equipmentNames && run.equipmentNames[0] && run.user)
-        ? run.equipmentNames[0] + ' ' + run.user
+        ? run.equipmentNames[0]
         : '已满';
-      block.textContent = deviceUser;
+      block.textContent = deviceUser + (run.note ? ' ' + run.note : '');
       runContent.appendChild(block);
     }
 
