@@ -167,19 +167,23 @@ function getSlotRange(slotA, slotB) {
   return TIME_SLOTS.slice(lo, hi + 1);
 }
 
-/** 按房间聚合：将时段按「可预约/已满/我的预约」合并成连续块 */
+/** 按房间聚合：将时段按「可预约/已满/我的预约」合并成连续块。同一房间同一时段只允许一台设备被预约。 */
 function getRunsByRoom(room, dayBookings) {
   const devices = getEquipmentByRoom(room).map(e => e.name);
   const runs = [];
   for (let i = 0; i < TIME_SLOTS.length; i++) {
     const slot = TIME_SLOTS[i];
-    let hasFree = false;
     const myEquip = [];
+    let anyBooked = false;
     devices.forEach(name => {
       const user = dayBookings[name] && dayBookings[name][slot];
-      if (!user) hasFree = true;
-      else if (user === currentUser) myEquip.push(name);
+      if (user) {
+        anyBooked = true;
+        if (user === currentUser) myEquip.push(name);
+      }
     });
+    // 该时段该房间只要有一台被预约则视为已占满，不能再预约其他设备
+    const hasFree = !anyBooked;
     const status = myEquip.length > 0 ? 'mine' : (hasFree ? 'empty' : 'full');
     const equipmentNames = myEquip.length > 0 ? myEquip : null;
     if (runs.length > 0 && runs[runs.length - 1].status === status) {
@@ -208,7 +212,8 @@ function onSlotPointerDown(e, slot) {
   if (!room) return;
   const dayBookings = getBookingsForDay(formatDate(currentDate));
   const devices = getEquipmentByRoom(room).map(e => e.name);
-  const hasFree = devices.some(name => !(dayBookings[name] && dayBookings[name][slot]));
+  // 同一房间同一时段只允许一台设备：该时段只要有一台被预约则不可再选
+  const hasFree = !devices.some(name => dayBookings[name] && dayBookings[name][slot]);
   if (!hasFree) return;
   e.preventDefault();
   dragStartSlot = slot;
@@ -240,10 +245,26 @@ function onMineRunMouseUp() {
 function onDocMouseMove(e) {
   if (dragStartSlot == null) return;
   const target = e.target;
+  let slot = null;
   const block = target.closest('.slot-block[data-slot]');
   if (block && !block.classList.contains('slot-taken')) {
+    slot = block.dataset.slot;
+  }
+  // 拖拽时按鼠标 Y 对应时间线行计算 slot，避免与时间线错位
+  if (slot == null) {
+    const timeline = document.getElementById('dayTimeline');
+    if (timeline && timeline.contains(target)) {
+      const rect = timeline.getBoundingClientRect();
+      const rowHeight = rect.height / TIME_SLOTS.length;
+      const relY = e.clientY - rect.top;
+      let rowIndex = Math.floor(relY / rowHeight);
+      rowIndex = Math.max(0, Math.min(rowIndex, TIME_SLOTS.length - 1));
+      slot = TIME_SLOTS[rowIndex];
+    }
+  }
+  if (slot) {
     isDragging = true;
-    dragEndSlot = block.dataset.slot;
+    dragEndSlot = slot;
     updateDragRange();
   }
 }
@@ -304,7 +325,8 @@ function openBookingModal() {
     const label = document.createElement('label');
     label.className = 'flex items-center gap-2 cursor-pointer hover:bg-slate-100 rounded px-2 py-1.5';
     const input = document.createElement('input');
-    input.type = 'checkbox';
+    input.type = 'radio';
+    input.name = 'bookingEquipment';
     input.className = 'rounded border-slate-300 text-primary focus:ring-primary';
     input.value = equip.name;
     input.dataset.equipName = equip.name;
@@ -327,37 +349,28 @@ function closeBookingModal() {
 
 function confirmBooking() {
   if (!pendingBookingSlots || pendingBookingSlots.length === 0) return;
-  const checked = document.querySelectorAll('#bookingModalEquipmentList input:checked');
-  const selectedNames = Array.from(checked).map(el => el.value);
-  if (selectedNames.length === 0) {
-    alert('请至少选择一台设备。');
+  const chosen = document.querySelector('#bookingModalEquipmentList input:checked');
+  const equipName = chosen ? chosen.value : null;
+  if (!equipName) {
+    alert('请选择一台设备。');
     return;
   }
   const dateStr = formatDate(currentDate);
   const dayBookings = getBookingsForDay(dateStr);
-  if (!bookings[dateStr]) bookings[dateStr] = {};
-  let bookedCount = 0;
-  let partialCount = 0;
-  selectedNames.forEach(equipName => {
-    const eq = dayBookings[equipName] || {};
-    const freeSlots = pendingBookingSlots.filter(s => !eq[s]);
-    if (freeSlots.length === 0) return;
-    if (!bookings[dateStr][equipName]) bookings[dateStr][equipName] = {};
-    freeSlots.forEach(s => {
-      bookings[dateStr][equipName][s] = currentUser;
-    });
-    bookedCount++;
-    if (freeSlots.length < pendingBookingSlots.length) partialCount++;
-  });
-  if (bookedCount === 0) {
-    alert('所选设备在此时间段均已被预约，请选择其他设备或时段。');
+  const eq = dayBookings[equipName] || {};
+  const freeSlots = pendingBookingSlots.filter(s => !eq[s]);
+  if (freeSlots.length === 0) {
+    alert('该设备在此时间段已被预约，请选择其他设备或时段。');
     return;
   }
+  if (!bookings[dateStr]) bookings[dateStr] = {};
+  if (!bookings[dateStr][equipName]) bookings[dateStr][equipName] = {};
+  freeSlots.forEach(s => {
+    bookings[dateStr][equipName][s] = currentUser;
+  });
   localStorage.setItem('bookings', JSON.stringify(bookings));
   closeBookingModal();
-  const msg = bookedCount > 1
-    ? '已为 ' + bookedCount + ' 台设备预约成功'
-    : (partialCount ? '预约成功（部分时段已被占用）' : '预约成功');
+  const msg = freeSlots.length < pendingBookingSlots.length ? '预约成功（部分时段已被占用）' : '预约成功';
   showToast(msg);
   renderDayCalendar();
 }
