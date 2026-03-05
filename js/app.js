@@ -37,7 +37,7 @@ const TIME_SLOTS = getTimeSlots();
 
 let currentUser = null;
 let currentDate = new Date();
-let bookings = JSON.parse(localStorage.getItem('bookings') || '{}');
+let bookings = {};
 // bookings[date][equipmentName][slotTime] = username 或 { user, note }
 
 function getBookingUser(val) {
@@ -51,6 +51,35 @@ function getBookingNote(val) {
 function hasBooking(val) {
   if (val == null) return false;
   return typeof val === 'string' ? true : !!val.user;
+}
+
+// ---------- API 通信 ----------
+async function loadBookings(dateStr) {
+  try {
+    const res = await fetch('/api/bookings?date=' + encodeURIComponent(dateStr));
+    const data = await res.json();
+    bookings[dateStr] = data;
+  } catch (e) {
+    console.error('加载预约数据失败:', e);
+  }
+}
+
+async function apiCreateBooking(dateStr, equipName, slots, user, note) {
+  const res = await fetch('/api/bookings', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ date: dateStr, equipName, slots, user, note: note || '' })
+  });
+  return res.json();
+}
+
+async function apiDeleteBooking(dateStr, equipName, slots, user) {
+  const res = await fetch('/api/bookings', {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ date: dateStr, equipName, slots, user })
+  });
+  return res.json();
 }
 
 function getRooms() {
@@ -112,7 +141,7 @@ function formatDateDisplay(d) {
 
 const STORAGE_KEY_USER = 'labReservationUser';
 
-function login() {
+async function login() {
   const user = document.getElementById('username').value.trim();
   const pass = document.getElementById('password').value;
   if (user === 'LRG501' && pass === 'LRG501') {
@@ -124,6 +153,7 @@ function login() {
     currentDate = new Date();
     initRoomSelect();
     renderDateNav();
+    await loadBookings(formatDate(currentDate));
     renderDayCalendar();
   } else {
     alert('用户名或密码错误');
@@ -138,7 +168,7 @@ function logout() {
 }
 
 /** 页面加载时恢复登录状态，避免刷新后重新登录 */
-function restoreLoginIfSaved() {
+async function restoreLoginIfSaved() {
   const saved = localStorage.getItem(STORAGE_KEY_USER);
   if (saved) {
     currentUser = saved;
@@ -148,29 +178,32 @@ function restoreLoginIfSaved() {
     currentDate = new Date();
     initRoomSelect();
     renderDateNav();
+    await loadBookings(formatDate(currentDate));
     renderDayCalendar();
   }
 }
 
-function prevDay() {
+async function prevDay() {
   awaitingTimeForSwitch = false;
   const hintEl = document.getElementById('calendarHint');
   if (hintEl) hintEl.innerHTML = CALENDAR_HINT_DEFAULT;
   currentDate.setDate(currentDate.getDate() - 1);
   renderDateNav();
+  await loadBookings(formatDate(currentDate));
   renderDayCalendar();
 }
 
-function nextDay() {
+async function nextDay() {
   awaitingTimeForSwitch = false;
   const hintEl = document.getElementById('calendarHint');
   if (hintEl) hintEl.innerHTML = CALENDAR_HINT_DEFAULT;
   currentDate.setDate(currentDate.getDate() + 1);
   renderDateNav();
+  await loadBookings(formatDate(currentDate));
   renderDayCalendar();
 }
 
-function goToToday() {
+async function goToToday() {
   awaitingTimeForSwitch = false;
   const hintEl = document.getElementById('calendarHint');
   if (hintEl) hintEl.innerHTML = CALENDAR_HINT_DEFAULT;
@@ -178,6 +211,7 @@ function goToToday() {
   today.setHours(0, 0, 0, 0);
   currentDate.setTime(today.getTime());
   renderDateNav();
+  await loadBookings(formatDate(currentDate));
   renderDayCalendar();
 }
 
@@ -267,9 +301,7 @@ function runsOverlap(a, b) {
 function assignOverlapColumns(runs) {
   const n = runs.length;
   if (n === 0) return;
-  // 建图：重叠则连边
   const overlap = (i, j) => runsOverlap(runs[i], runs[j]);
-  // 找连通分量（并查集）
   const parent = Array.from({ length: n }, (_, i) => i);
   function find(i) {
     if (parent[i] !== i) parent[i] = find(parent[i]);
@@ -290,7 +322,6 @@ function assignOverlapColumns(runs) {
     if (!compRuns[c]) compRuns[c] = [];
     compRuns[c].push({ run, idx: i });
   });
-  // 每个分量内按 startIdx 排序，依次分配列 0,1,2,...
   Object.values(compRuns).forEach(arr => {
     arr.sort((a, b) => a.run.startIdx - b.run.startIdx);
     const totalColumns = arr.length;
@@ -299,7 +330,6 @@ function assignOverlapColumns(runs) {
       run.totalColumns = totalColumns;
     });
   });
-  // 无重叠的 run（单独成组）设为 1 列
   runs.forEach(run => {
     if (run.column == null) {
       run.column = 0;
@@ -314,11 +344,8 @@ let isDragging = false;
 let mouseDownOnMineRun = null;
 let pendingBookingSlots = null;
 let pendingCancelRun = null;
-/** 从「我的预约」选择「改约其他设备」时，确认新预约前需先取消的旧设备 */
 let pendingSwitchFromEquipment = null;
-/** 改约时需取消的旧时段（选完新时间后确认时用） */
 let pendingSwitchFromSlots = null;
-/** 为 true 时，下一次在日历上选时间会打开预约弹窗（改约其他设备流程） */
 let awaitingTimeForSwitch = false;
 
 function onSlotPointerDown(e, slot) {
@@ -326,7 +353,6 @@ function onSlotPointerDown(e, slot) {
   if (!room) return;
   const dayBookings = getBookingsForDay(formatDate(currentDate));
   const devices = getEquipmentByRoom(room).map(e => e.name);
-  // 该时段至少有一台设备空闲即可选
   const hasFree = devices.some(name => !hasBooking(dayBookings[name] && dayBookings[name][slot]));
   if (!hasFree) return;
   e.preventDefault();
@@ -354,7 +380,6 @@ function onMineRunMouseUp() {
     equipmentNames: mouseDownOnMineRun.equipmentNames
   };
   mouseDownOnMineRun = null;
-  const room = document.getElementById('room').value;
   openCancelModal();
 }
 
@@ -366,7 +391,6 @@ function onDocMouseMove(e) {
   if (block && !block.classList.contains('slot-taken')) {
     slot = block.dataset.slot;
   }
-  // 拖到空白处（如块与块之间）时用 Y 坐标对应时间行
   if (slot == null) {
     const timeline = document.getElementById('dayTimeline');
     if (timeline && timeline.contains(target)) {
@@ -537,7 +561,7 @@ function closeNewBookingModal() {
   document.getElementById('newBookingModal').classList.remove('flex');
 }
 
-function confirmNewBooking() {
+async function confirmNewBooking() {
   const room = document.getElementById('room').value;
   if (!room) return;
   const startSlot = document.getElementById('newBookingStart').value;
@@ -561,12 +585,14 @@ function confirmNewBooking() {
     return;
   }
   const note = (document.getElementById('newBookingNote') && document.getElementById('newBookingNote').value || '').trim();
-  if (!bookings[dateStr]) bookings[dateStr] = {};
-  if (!bookings[dateStr][equipName]) bookings[dateStr][equipName] = {};
-  slots.forEach(s => {
-    bookings[dateStr][equipName][s] = note ? { user: currentUser, note } : currentUser;
-  });
-  localStorage.setItem('bookings', JSON.stringify(bookings));
+  try {
+    await apiCreateBooking(dateStr, equipName, slots, currentUser, note);
+  } catch (e) {
+    console.error('预约失败:', e);
+    alert('预约失败，请重试。');
+    return;
+  }
+  await loadBookings(dateStr);
   if (document.getElementById('newBookingNote')) document.getElementById('newBookingNote').value = '';
   closeNewBookingModal();
   showToast('预约成功');
@@ -575,12 +601,11 @@ function confirmNewBooking() {
     renderOverviewTodayContent(new Date());
   }
   if (!document.getElementById('overviewWeekModal').classList.contains('hidden')) {
-    bookings = JSON.parse(localStorage.getItem('bookings') || '{}');
     renderOverviewWeekContent();
   }
 }
 
-function confirmBooking() {
+async function confirmBooking() {
   if (!pendingBookingSlots || pendingBookingSlots.length === 0) return;
   const chosen = document.querySelector('#bookingModalEquipmentList input:checked');
   const equipName = chosen ? chosen.value : null;
@@ -597,23 +622,26 @@ function confirmBooking() {
     return;
   }
   const note = (document.getElementById('bookingModalNote') && document.getElementById('bookingModalNote').value || '').trim();
-  // 若从「改约其他设备」进入，先取消原设备在「原时段」的预约（pendingSwitchFromSlots）
+  // 若从「改约其他设备」进入，先取消原设备在「原时段」的预约
   if (pendingSwitchFromEquipment && pendingSwitchFromEquipment.length > 0 && pendingSwitchFromSlots) {
-    pendingSwitchFromEquipment.forEach(oldEquip => {
-      if (!bookings[dateStr] || !bookings[dateStr][oldEquip]) return;
-      pendingSwitchFromSlots.forEach(s => delete bookings[dateStr][oldEquip][s]);
-      if (Object.keys(bookings[dateStr][oldEquip]).length === 0) delete bookings[dateStr][oldEquip];
-    });
-    if (Object.keys(bookings[dateStr] || {}).length === 0) delete bookings[dateStr];
+    for (const oldEquip of pendingSwitchFromEquipment) {
+      try {
+        await apiDeleteBooking(dateStr, oldEquip, pendingSwitchFromSlots, currentUser);
+      } catch (e) {
+        console.error('取消旧预约失败:', e);
+      }
+    }
     pendingSwitchFromEquipment = null;
     pendingSwitchFromSlots = null;
   }
-  if (!bookings[dateStr]) bookings[dateStr] = {};
-  if (!bookings[dateStr][equipName]) bookings[dateStr][equipName] = {};
-  freeSlots.forEach(s => {
-    bookings[dateStr][equipName][s] = note ? { user: currentUser, note } : currentUser;
-  });
-  localStorage.setItem('bookings', JSON.stringify(bookings));
+  try {
+    await apiCreateBooking(dateStr, equipName, freeSlots, currentUser, note);
+  } catch (e) {
+    console.error('预约失败:', e);
+    alert('预约失败，请重试。');
+    return;
+  }
+  await loadBookings(dateStr);
   if (document.getElementById('bookingModalNote')) document.getElementById('bookingModalNote').value = '';
   const msg = freeSlots.length < pendingBookingSlots.length ? '预约成功（部分时段已被占用）' : '预约成功';
   showToast(msg);
@@ -648,7 +676,6 @@ function closeMineChoiceModal() {
 const CALENDAR_HINT_DEFAULT = '请先选择房间。在日历中<strong>点击</strong>或<strong>拖拽</strong>选择时间段，再在弹窗中选择设备确认预约；点击自己的预约可取消。';
 const CALENDAR_HINT_SWITCH_TIME = '请在地图上<strong>点击</strong>或<strong>拖拽</strong>选择新的时间段，再在弹窗中选择设备。';
 
-/** 选择「预约本实验室其他设备」：关闭弹窗，让用户在地图上选新时间段，选完再打开预约弹窗 */
 function chooseSwitchEquipment() {
   if (!pendingCancelRun) return;
   pendingSwitchFromEquipment = pendingCancelRun.equipmentNames.slice();
@@ -660,7 +687,6 @@ function chooseSwitchEquipment() {
   showToast('请在地图上点击或拖拽选择新的时间段');
 }
 
-/** 选择「取消该预约」：仅关闭选择弹窗并打开取消弹窗（不清 pendingCancelRun） */
 function chooseCancelBooking() {
   document.getElementById('mineChoiceModal').classList.add('hidden');
   document.getElementById('mineChoiceModal').classList.remove('flex');
@@ -682,26 +708,24 @@ function closeCancelModal() {
   pendingCancelRun = null;
 }
 
-function confirmCancel() {
+async function confirmCancel() {
   if (!pendingCancelRun) return;
   const dateStr = formatDate(currentDate);
-  pendingCancelRun.equipmentNames.forEach(equipName => {
-    if (!bookings[dateStr] || !bookings[dateStr][equipName]) return;
-    const slots = getSlotRange(pendingCancelRun.slotStart, pendingCancelRun.slotEnd);
-    slots.forEach(s => delete bookings[dateStr][equipName][s]);
-    if (Object.keys(bookings[dateStr][equipName]).length === 0) delete bookings[dateStr][equipName];
-  });
-  if (Object.keys(bookings[dateStr] || {}).length === 0) delete bookings[dateStr];
-  localStorage.setItem('bookings', JSON.stringify(bookings));
+  const slots = getSlotRange(pendingCancelRun.slotStart, pendingCancelRun.slotEnd);
+  for (const equipName of pendingCancelRun.equipmentNames) {
+    try {
+      await apiDeleteBooking(dateStr, equipName, slots, currentUser);
+    } catch (e) {
+      console.error('取消预约失败:', e);
+    }
+  }
+  await loadBookings(dateStr);
   closeCancelModal();
   renderDayCalendar();
-  // 若今日/本周概览弹窗正打开，用最新数据刷新（与 localStorage 一致）
   if (!document.getElementById('overviewTodayModal').classList.contains('hidden')) {
-    bookings = JSON.parse(localStorage.getItem('bookings') || '{}');
     renderOverviewTodayContent(new Date());
   }
   if (!document.getElementById('overviewWeekModal').classList.contains('hidden')) {
-    bookings = JSON.parse(localStorage.getItem('bookings') || '{}');
     renderOverviewWeekContent();
   }
 }
@@ -714,9 +738,7 @@ function showToast(message) {
 }
 
 // ---------- 今日 / 本周概览 ----------
-/** 今日概览展示模式：'room' 按房间 | 'equipment' 按设备 */
 let overviewTodayMode = 'room';
-/** 今日概览当前查看的日期（打开弹窗时设为当天） */
 let overviewTodayViewDate = null;
 
 function setOverviewTodayMode(mode) {
@@ -733,7 +755,6 @@ function setOverviewTodayMode(mode) {
   renderOverviewTodayContent(overviewTodayViewDate || new Date());
 }
 
-/** 某设备在某日的预约时段列表：[{ startSlot, endSlot, user, note }, ...] */
 function getRunsByEquipment(equipName, dayBookings) {
   const slotToUser = dayBookings[equipName] || {};
   const runs = [];
@@ -754,7 +775,7 @@ function getRunsByEquipment(equipName, dayBookings) {
   }
   return runs;
 }
-/** 某设备在某日的预约时段（连续同用户合并为 run） */
+
 function getBookedRunsForEquipment(dateStr, equipName) {
   const eq = (bookings[dateStr] || {})[equipName] || {};
   const runs = [];
@@ -776,7 +797,6 @@ function getBookedRunsForEquipment(dateStr, equipName) {
   }));
 }
 
-/** 指定日期所在周（周一至周日）的 7 个日期，不传则用 currentDate */
 function getWeekDates(forDate) {
   const d = forDate ? new Date(forDate) : new Date(currentDate);
   d.setHours(0, 0, 0, 0);
@@ -793,7 +813,6 @@ function getWeekDates(forDate) {
   return dates;
 }
 
-/** 渲染某日某房间的只读时间轴（用于今日概览弹窗） */
 function renderDayTimelineReadonly(container, room, dateStr) {
   const dayBookings = getBookingsForDay(dateStr);
   const runs = getRunsByRoom(room, dayBookings);
@@ -811,7 +830,6 @@ function renderDayTimelineReadonly(container, room, dateStr) {
 
   runs.forEach(run => {
     const N = run.endIdx - run.startIdx + 1;
-
     const runBlock = document.createElement('div');
     runBlock.className = 'run-block';
     runBlock.style.gridRow = (run.startIdx + 1) + ' / span ' + N;
@@ -847,9 +865,10 @@ function renderDayTimelineReadonly(container, room, dateStr) {
   });
 }
 
-function renderOverviewTodayContent(forDate) {
+async function renderOverviewTodayContent(forDate) {
   const d = forDate || currentDate;
   const dateStr = formatDate(d);
+  await loadBookings(dateStr);
   const container = document.getElementById('overviewTodayContent');
   container.innerHTML = '';
 
@@ -875,7 +894,6 @@ function renderOverviewTodayContent(forDate) {
   });
 }
 
-/** 今日概览 - 按设备：每台设备下列出今日已约时段 */
 function renderOverviewTodayByEquipment(forDate, dateStr, container) {
   const dayBookings = getBookingsForDay(dateStr || formatDate(forDate));
 
@@ -912,9 +930,9 @@ function renderOverviewTodayByEquipment(forDate, dateStr, container) {
   });
 }
 
-/** 本周概览：在容器内渲染周历网格（时间行 × 7 天） */
-function renderOverviewWeekContent() {
+async function renderOverviewWeekContent() {
   const dates = getWeekDates(new Date());
+  await Promise.all(dates.map(d => loadBookings(formatDate(d))));
   document.getElementById('overviewWeekRange').textContent = formatDateDisplay(dates[0]) + ' 至 ' + formatDateDisplay(dates[6]);
   const container = document.getElementById('overviewWeekContent');
   container.innerHTML = '';
@@ -923,7 +941,6 @@ function renderOverviewWeekContent() {
   grid.className = 'week-overview-grid';
   grid.style.setProperty('--time-slots-count', TIME_SLOTS.length);
 
-  // 表头：空白角 + 7 天
   const headerRow = document.createElement('div');
   headerRow.className = 'week-overview-row week-overview-header';
   const corner = document.createElement('div');
@@ -938,7 +955,6 @@ function renderOverviewWeekContent() {
   });
   grid.appendChild(headerRow);
 
-  // 每一时间行
   for (let ti = 0; ti < TIME_SLOTS.length; ti++) {
     const row = document.createElement('div');
     row.className = 'week-overview-row';
@@ -978,8 +994,7 @@ function renderOverviewWeekContent() {
   container.appendChild(grid);
 }
 
-function openOverviewToday() {
-  bookings = JSON.parse(localStorage.getItem('bookings') || '{}');
+async function openOverviewToday() {
   overviewTodayViewDate = new Date();
   document.getElementById('overviewTodayDate').textContent = formatDateDisplay(overviewTodayViewDate);
   setOverviewTodayMode(overviewTodayMode);
@@ -992,9 +1007,8 @@ function closeOverviewToday() {
   document.getElementById('overviewTodayModal').classList.remove('flex');
 }
 
-function openOverviewWeek() {
-  bookings = JSON.parse(localStorage.getItem('bookings') || '{}');
-  renderOverviewWeekContent();
+async function openOverviewWeek() {
+  await renderOverviewWeekContent();
   document.getElementById('overviewWeekModal').classList.remove('hidden');
   document.getElementById('overviewWeekModal').classList.add('flex');
 }
@@ -1005,7 +1019,6 @@ function closeOverviewWeek() {
 }
 
 // ---------- 日历渲染 ----------
-/** 在「我的预约」块内追加「取消」按钮（仅当本房间设备数 > 1 时） */
 function appendMineActionButtons(block, room, startSlot, endSlot, equipmentNames) {
   if (!room || getEquipmentByRoom(room).length <= 1) return;
   block.classList.add('slot-mine-has-actions');
@@ -1025,7 +1038,6 @@ function appendMineActionButtons(block, room, startSlot, endSlot, equipmentNames
   block.appendChild(wrap);
 }
 
-/** 找到包含 slotIndex 的 run */
 function getRunAtSlot(runs, slotIndex) {
   for (let r = 0; r < runs.length; r++) {
     if (runs[r].startIdx <= slotIndex && slotIndex <= runs[r].endIdx) return runs[r];
@@ -1088,7 +1100,6 @@ function renderDayCalendar() {
     runContent.className = 'run-content ' + (run.status === 'empty' ? 'empty-run' : '');
 
     if (run.status === 'empty') {
-      /* 每格一块、固定 44px，与时间轴对齐；拖拽时只高亮选中范围 */
       for (let j = run.startIdx; j <= run.endIdx; j++) {
         const slot = TIME_SLOTS[j];
         const block = document.createElement('div');
